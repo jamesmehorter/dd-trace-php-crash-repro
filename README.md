@@ -74,14 +74,21 @@ That's it. The PHP script writes a temp file, serializes JSON, and returns. No f
 
 Concurrency level barely matters. The only variable is request volume — ~500+ requests reliably crashes.
 
-### Version comparison
+### Full test matrix (CI-verified on Linux x86_64)
 
-| Version | Result |
-|---|---|
-| No dd-trace-php | Survived 30K requests — FrankenPHP alone is stable |
-| **1.16.0** | Survived 180s — 14 bursts, 140K requests, zero failures |
-| **1.17.0** | **CRASHED after 1s** — first burst |
-| **1.18.0** | **CRASHED after ~10s** |
+[![Crash Test Matrix](https://github.com/jamesmehorter/dd-trace-php-crash-repro/actions/workflows/crash-test.yml/badge.svg)](https://github.com/jamesmehorter/dd-trace-php-crash-repro/actions/workflows/crash-test.yml)
+
+| Test | Result | Notes |
+|---|---|---|
+| No dd-trace-php | **Survived** | FrankenPHP alone is stable |
+| 1.16.0 (appsec + profiling) | **Survived** | Last stable version |
+| **1.17.0** (appsec + profiling) | **CRASHED** | Regression introduced here |
+| **1.18.0** (appsec + profiling) | **CRASHED** | |
+| 1.18.0 trace only | **Survived** | Core tracing is not the problem |
+| 1.18.0 trace + appsec | **Survived** | AppSec (libddwaf) is not the problem |
+| **1.18.0 trace + profiling** | **CRASHED** | **Profiler is the culprit** |
+
+**The crash requires the profiling extension.** Core tracing and appsec alone are stable. The regression is in the profiler's Rust code (introduced in 1.17.0) interacting with FrankenPHP's ZTS thread model under concurrent load.
 
 ### Crash output
 
@@ -141,8 +148,5 @@ Pinning to 1.16.0 is the only reliable fix across all configurations.
 
 ## Not Yet Tested
 
-- [ ] Without `--enable-appsec` to isolate whether libddwaf is involved
-- [ ] Without `--enable-profiling` to isolate whether the profiler is involved
-- [ ] x86_64 architecture
 - [ ] PHP 8.3 ZTS
 - [ ] Without the Datadog Agent sidecar
