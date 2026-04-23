@@ -4,11 +4,15 @@ set -e
 # Allow core dumps
 ulimit -c unlimited 2>/dev/null || true
 
-if [[ "${RUN_WITH_GDB:-true}" == "true" ]]; then
-    echo "[entrypoint] Starting FrankenPHP under gdb (will capture backtrace on crash)"
-    echo "[entrypoint] gdb output will appear in container logs"
+# Always load the crash handler — prints backtrace on SIGTRAP/SIGABRT/SIGSEGV
+# with zero performance overhead (signal handler only fires on crash).
+export LD_PRELOAD="/usr/local/lib/crash_handler.so"
 
-    # gdb runs frankenphp, catches signals, prints backtrace, then exits
+if [[ "${RUN_WITH_GDB:-false}" == "true" ]]; then
+    echo "[entrypoint] Starting FrankenPHP under gdb"
+    echo "[entrypoint] WARNING: gdb limits thread count and slows execution significantly"
+    unset LD_PRELOAD  # gdb handles signals itself
+
     exec gdb -batch \
         -ex "set confirm off" \
         -ex "set pagination off" \
@@ -31,7 +35,6 @@ if [[ "${RUN_WITH_GDB:-true}" == "true" ]]; then
         -ex "quit 133" \
         --args frankenphp run --config /etc/caddy/Caddyfile
 else
-    echo "[entrypoint] Starting FrankenPHP directly (core dumps to /tmp/core.*)"
-    echo "[entrypoint] After crash: docker cp <container>:/tmp/core.* . && gdb frankenphp core.*"
+    echo "[entrypoint] Starting FrankenPHP with crash handler (LD_PRELOAD)"
     exec frankenphp run --config /etc/caddy/Caddyfile
 fi
