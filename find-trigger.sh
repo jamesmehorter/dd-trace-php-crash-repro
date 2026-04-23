@@ -5,7 +5,7 @@ set -euo pipefail
 # The pattern is: BURST → WAIT → BURST → WAIT → BURST ...
 
 APP_URL="${APP_URL:-http://localhost:8080}"
-CONTAINER="dd-trace-php-crash-repro-app-1"
+CONTAINER="$(docker compose ps -q app 2>/dev/null)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

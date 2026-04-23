@@ -19,6 +19,13 @@ The allocation size (~3.4 exabytes) is a corrupted pointer value being read as a
 
 **1.16.0 is stable. 1.17.0+ crashes.**
 
+> **Scope:** Confirmed on FrankenPHP + PHP 8.4 ZTS. Other reporters on [#3729](https://github.com/DataDog/dd-trace-php/issues/3729) have seen this on PHP-FPM (8.3 NTS) and Symfony worker mode (8.2 ZTS) as well. We have not tested those configurations with this reproducer.
+
+## Prerequisites
+
+- Docker and Docker Compose
+- `ab` (Apache Bench) — pre-installed on macOS; on Linux: `apt-get install apache2-utils`
+
 ## How to Reproduce
 
 ```bash
@@ -39,6 +46,8 @@ cd dd-trace-php-crash-repro
 3. Checks if the container crashed
 
 That's it. No framework, no database, no special timing. Just concurrent requests to a trivial PHP script with dd-trace-php active.
+
+> **Note:** The Datadog Agent sidecar is included because dd-trace-php sends traces to it — removing the agent changes the code path and may affect reproducibility. The crash is in dd-trace-php's client-side code, not in the agent.
 
 ### Crash trigger analysis
 
@@ -63,7 +72,7 @@ We tested variations of request count, concurrency, and idle time to find the mi
 
 | Version | Result |
 |---|---|
-| **1.18.0** | **CRASHED after 24s** |
+| **1.18.0** | **CRASHED** — under 10s |
 | **1.16.0** | Survived 180s — 14 bursts, 140K requests, zero failures |
 
 ### Crash output
@@ -81,7 +90,9 @@ frankenphp() [0x48c368]
 === END CRASH HANDLER ===
 ```
 
-Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::abort()`. The backtrace is shallow because FrankenPHP is a statically-linked Go binary. A debug-symbol build of dd-trace-php shifts the memory layout enough to prevent the crash (Heisenbug), so the Datadog team will need to capture the full backtrace with their internal tooling.
+Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::abort()`. The backtrace is shallow because FrankenPHP is a statically-linked Go binary — `backtrace()` can't unwind through Go's stack frames.
+
+> **Heisenbug note:** Replacing `ddtrace.so` with the debug-symbol build (`ddtrace-debug.so` from the release assets) shifts the memory layout enough to prevent the crash. The Datadog team will need to capture the full backtrace with their internal tooling (e.g., ASAN build or instrumented allocator).
 
 ## Environment
 
@@ -90,21 +101,21 @@ Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::ab
 - **FrankenPHP threads:** 20 (`num_threads` in Caddyfile)
 - **dd-trace-php:** installed with `--enable-appsec --enable-profiling`
 - **Tested on:** macOS ARM64 (Docker Desktop) and ECS Fargate (Linux ARM64)
+- **Not tested:** x86_64, PHP 8.3 ZTS, NTS builds, php-fpm
 
 ## What's in the Box
 
 | File | Purpose |
 |---|---|
+| `version-test.sh` | **Start here.** Automated A/B test — builds specific version, runs load, reports result |
 | `Dockerfile` | FrankenPHP + dd-trace-php (version via build arg) + crash handler |
 | `Caddyfile` | 20 threads, `/health` at Caddy level (never reaches PHP) |
 | `public/index.php` | Trivial PHP script — file I/O + JSON serialization |
 | `docker-compose.yml` | App + Datadog Agent sidecar |
 | `crash_handler.c` | LD_PRELOAD signal handler — prints backtrace on crash |
 | `entrypoint.sh` | Starts FrankenPHP with crash handler (or gdb via `RUN_WITH_GDB=true`) |
-| `version-test.sh` | Automated A/B test — builds specific version, runs load, reports result |
-| `burst-test.sh` | Continuous burst-then-idle load pattern |
-| `find-trigger.sh` | Systematically tests timing/concurrency variations |
-| `test.sh` | Idle-cycle test (alternative reproduction path) |
+| `burst-test.sh` | Continuous burst-then-idle load (investigation tool) |
+| `find-trigger.sh` | Systematically tests timing/concurrency variations (investigation tool) |
 
 ## Env Vars We've Tried (None Fixed It)
 
@@ -119,3 +130,12 @@ All set simultaneously on an ECS task running 1.18.0. It still crashed.
 | All four combined | — | Still crashes |
 
 The only fix is pinning to 1.16.0.
+
+## TODO
+
+- [ ] Test 1.17.0 explicitly to confirm it's the first broken release
+- [ ] Test without `--enable-appsec` to isolate whether libddwaf is involved
+- [ ] Test without `--enable-profiling` to isolate whether the profiler is involved
+- [ ] Test on x86_64
+- [ ] Test on PHP 8.3 ZTS
+- [ ] Test whether crash reproduces without the Datadog Agent sidecar

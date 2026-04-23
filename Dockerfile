@@ -20,9 +20,6 @@ COPY crash_handler.c /tmp/crash_handler.c
 RUN gcc -shared -fPIC -rdynamic -o /usr/local/lib/crash_handler.so /tmp/crash_handler.c \
     && rm /tmp/crash_handler.c
 
-# Enable core dumps inside the container
-RUN echo 'kernel.core_pattern=/tmp/core.%e.%p' > /etc/sysctl.d/core.conf \
-    && ulimit -c unlimited 2>/dev/null || true
 
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY public/ /app/public/
