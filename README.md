@@ -1,6 +1,8 @@
 # dd-trace-php Crash Reproducer
 
-dd-trace-php 1.17.0+ crashes PHP processes with corrupted memory allocations and SIGABRT. This repo reproduces the crash in under 10 seconds with no application framework — just FrankenPHP, dd-trace-php, and a trivial PHP script.
+dd-trace-php 1.17.0+ crashes under normal traffic. Install it, send requests, process dies. No special configuration, no edge case, no unusual load pattern — just a PHP application serving concurrent requests with dd-trace-php active.
+
+This repo reproduces the crash in under 10 seconds with a trivial PHP script. No framework, no database, no application code.
 
 **Related issues:**
 - [dd-trace-php #3729](https://github.com/DataDog/dd-trace-php/issues/3729) — heap corruption on FrankenPHP (open)
@@ -9,15 +11,15 @@ dd-trace-php 1.17.0+ crashes PHP processes with corrupted memory allocations and
 
 ## The Problem
 
-When dd-trace-php 1.17.0+ runs inside FrankenPHP (PHP 8.4 ZTS), concurrent requests cause memory corruption in dd-trace-php's Rust internals (libdatadog), crashing the process:
+dd-trace-php 1.17.0+ corrupts memory during normal concurrent request handling, then crashes with:
 
 ```
 memory allocation of 3420891154821048684 bytes failed   (exit code 133 / SIGABRT)
 ```
 
-The allocation size (~3.4 exabytes) is a corrupted pointer value being read as a size.
+The allocation size (~3.4 exabytes) is a corrupted pointer being read as a size — heap corruption in dd-trace-php's Rust internals (libdatadog).
 
-**The trigger is concurrent requests through dd-trace-php's instrumentation hooks across FrankenPHP's PHP threads.** No special timing, idle periods, or traffic patterns required — just enough concurrent requests (~500+) with dd-trace-php active.
+This is not an edge case. The crash requires nothing more than concurrent HTTP requests to a PHP application with dd-trace-php loaded. No special timing, no idle periods, no unusual traffic patterns. Concurrency as low as 10 triggers it. It reproduces on a trivial PHP script that does nothing but write a temp file and return JSON.
 
 **1.16.0 is stable. 1.17.0+ crashes.**
 
