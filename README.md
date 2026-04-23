@@ -2,7 +2,7 @@
 
 dd-trace-php 1.17.0+ crashes under normal traffic. Install it, send requests, process dies. No special configuration, no edge case, no unusual load pattern — just a PHP application serving concurrent requests with dd-trace-php active.
 
-This repo reproduces the crash in under 10 seconds with a trivial PHP script. No framework, no database, no application code.
+This repo reproduces the crash in seconds with a trivial PHP script. No framework, no database, no application code.
 
 **Related issues:**
 - [dd-trace-php #3729](https://github.com/DataDog/dd-trace-php/issues/3729) — heap corruption on FrankenPHP (open)
@@ -19,7 +19,7 @@ memory allocation of 3420891154821048684 bytes failed   (exit code 133 / SIGABRT
 
 The allocation size (~3.4 exabytes) is a corrupted pointer being read as a size — heap corruption in dd-trace-php's Rust internals (libdatadog).
 
-This is not an edge case. The crash requires nothing more than concurrent HTTP requests to a PHP application with dd-trace-php loaded. No special timing, no idle periods, no unusual traffic patterns. Concurrency as low as 10 triggers it. It reproduces on a trivial PHP script that does nothing but write a temp file and return JSON.
+This is not an edge case. The crash requires nothing more than concurrent HTTP requests to a PHP application with dd-trace-php loaded. Concurrency as low as 10 triggers it. It reproduces on a trivial PHP script that does nothing but write a temp file and return JSON.
 
 **1.16.0 is stable. 1.17.0+ crashes.**
 
@@ -32,26 +32,36 @@ This is not an edge case. The crash requires nothing more than concurrent HTTP r
 
 ## How to Reproduce
 
+### One command
+
 ```bash
 git clone https://github.com/jamesmehorter/dd-trace-php-crash-repro.git
 cd dd-trace-php-crash-repro
-
-# Crashes in ~10 seconds
-./version-test.sh 1.18.0
-
-# Survives indefinitely
-./version-test.sh 1.16.0
+docker compose up -d --build
+ab -n 5000 -c 200 http://localhost:8080/
 ```
 
-### What the test does
+The container dies mid-request. Check with `docker compose ps` — the app container has exited with code 133.
 
-1. Builds FrankenPHP (PHP 8.4 ZTS, 20 threads) with dd-trace-php (appsec + profiling) and a Datadog Agent sidecar
-2. Sends `ab -n 5000 -c 200` in bursts with 5s gaps
-3. Checks if the container crashed (exit code 133)
+### Automated A/B version test
 
-No framework, no database. Just concurrent requests to a trivial PHP script with dd-trace-php active.
+```bash
+./version-test.sh 1.18.0   # crashes in seconds
+./version-test.sh 1.16.0   # survives indefinitely
+```
 
-> **Note:** The Datadog Agent sidecar is included because dd-trace-php sends traces to it — removing the agent changes the code path and may affect reproducibility. The crash is in dd-trace-php's client-side code, not in the agent.
+This script builds a specific dd-trace-php version, starts the stack, runs the load, and reports CRASHED or SURVIVED.
+
+### What the setup is
+
+- FrankenPHP (PHP 8.4 ZTS, 20 threads) serving a trivial PHP script
+- dd-trace-php installed with appsec and profiling
+- A Datadog Agent sidecar receiving traces
+- `ab` sending concurrent requests from the host
+
+That's it. The PHP script writes a temp file, serializes JSON, and returns. No framework, no database, no middleware.
+
+> **Note:** The Datadog Agent sidecar is included because dd-trace-php sends traces to it. The crash is in dd-trace-php's client-side code, not in the agent.
 
 ### What we learned about the trigger
 
@@ -59,17 +69,16 @@ No framework, no database. Just concurrent requests to a trivial PHP script with
 |---|---|
 | Concurrency 10 | **CRASHED** |
 | Concurrency 200 | **CRASHED** |
-| Zero idle between bursts | **CRASHED** |
-| 500+ requests per burst | **CRASHED** |
-| 100 requests per burst | Survived (not enough to trigger) |
+| 500+ requests | **CRASHED** |
+| 100 requests | Survived (not enough to trigger) |
 
-Concurrency level barely matters. Idle time doesn't matter at all. The only variable that affects reproducibility is request volume — ~500+ requests reliably crashes, ~100 sometimes survives.
+Concurrency level barely matters. The only variable is request volume — ~500+ requests reliably crashes.
 
 ### Version comparison
 
 | Version | Result |
 |---|---|
-| **1.18.0** | **CRASHED** — under 10s |
+| **1.18.0** | **CRASHED** — seconds |
 | **1.16.0** | Survived 180s — 14 bursts, 140K requests, zero failures |
 
 ### Crash output
@@ -87,7 +96,7 @@ frankenphp() [0x48c368]
 === END CRASH HANDLER ===
 ```
 
-Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::abort()`. The backtrace is shallow because FrankenPHP is a statically-linked Go binary — `backtrace()` can't unwind through Go's stack frames.
+Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::abort()`. The backtrace is shallow because FrankenPHP is a statically-linked Go binary.
 
 > **Heisenbug note:** Replacing `ddtrace.so` with the debug-symbol build (`ddtrace-debug.so` from the release assets) shifts the memory layout enough to prevent the crash. The Datadog team will need to capture the full backtrace with their internal tooling (e.g., ASAN build or instrumented allocator).
 
@@ -104,14 +113,14 @@ Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::ab
 
 | File | Purpose |
 |---|---|
-| `version-test.sh` | **Start here.** Builds a specific dd-trace-php version, runs load, reports crash or survive |
+| `version-test.sh` | Automated A/B version test — builds, loads, reports crash or survive |
 | `Dockerfile` | FrankenPHP + dd-trace-php (version via `DD_TRACE_VERSION` build arg) + crash handler |
 | `docker-compose.yml` | App + Datadog Agent sidecar |
 | `Caddyfile` | 20 FrankenPHP threads, `/health` handled by Caddy (never reaches PHP) |
 | `public/index.php` | Trivial PHP script — file I/O + JSON serialization |
 | `crash_handler.c` | LD_PRELOAD signal handler — prints backtrace on crash, zero runtime overhead |
 | `entrypoint.sh` | Starts FrankenPHP with crash handler (or gdb via `RUN_WITH_GDB=true`) |
-| `investigation/` | Scripts used during our trigger analysis (`burst-test.sh`, `find-trigger.sh`, `test.sh`) |
+| `investigation/` | Scripts used during trigger analysis (`burst-test.sh`, `find-trigger.sh`, `test.sh`) |
 
 ## Env Vars We've Tried (None Fixed It)
 
