@@ -122,19 +122,20 @@ Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::ab
 | `entrypoint.sh` | Starts FrankenPHP with crash handler (or gdb via `RUN_WITH_GDB=true`) |
 | `investigation/` | Scripts used during trigger analysis (`burst-test.sh`, `find-trigger.sh`, `test.sh`) |
 
-## Env Vars We've Tried (None Fixed It)
+## Env Var Workarounds
 
-All set simultaneously on an ECS task running 1.18.0. It still crashed.
+Setting all four of these simultaneously **prevents the crash in this minimal reproducer** (survived 30K+ requests where baseline crashes in seconds):
 
-| Variable | Value | Result |
-|---|---|---|
-| `DD_TRACE_SIDECAR_TRACE_SENDER` | `false` | Still crashes |
-| `DD_INSTRUMENTATION_TELEMETRY_ENABLED` | `false` | Still crashes |
-| `DD_APPSEC_ENABLED` | `false` | Still crashes |
-| `DD_TRACE_LOG_LEVEL` | `debug` | Still crashes |
-| All four combined | — | Still crashes |
+| Variable | Value |
+|---|---|
+| `DD_TRACE_SIDECAR_TRACE_SENDER` | `false` |
+| `DD_INSTRUMENTATION_TELEMETRY_ENABLED` | `false` |
+| `DD_APPSEC_ENABLED` | `false` |
+| `DD_TRACE_LOG_LEVEL` | `debug` |
 
-The only fix is pinning to 1.16.0.
+However, **these same env vars did not prevent crashes on a full Laravel application** running on ECS with the same dd-trace-php version. The real application exercises more dd-trace-php instrumentation hooks (database, Redis, HTTP client, middleware, etc.) which likely trigger the corruption through additional code paths.
+
+Pinning to 1.16.0 is the only reliable fix across all configurations.
 
 ## TODO
 
