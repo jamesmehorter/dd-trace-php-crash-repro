@@ -1,0 +1,19 @@
+{
+	auto_https off
+	admin off
+	frankenphp {
+		num_threads 20
+	}
+}
+
+:80 {
+	# Health check handled by Caddy directly — never reaches PHP.
+	# Simulates ECS/ALB health checks that keep the container alive
+	# while dd-trace-php's sidecar stays idle.
+	handle /health {
+		respond "OK" 200
+	}
+
+	root * /app/public
+	php_server
+}
