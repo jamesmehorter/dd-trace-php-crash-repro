@@ -9,13 +9,15 @@ dd-trace-php 1.17.0+ crashes PHP processes with corrupted memory allocations and
 
 ## The Problem
 
-When dd-trace-php 1.17.0+ runs inside FrankenPHP (PHP 8.4 ZTS), the process crashes with:
+When dd-trace-php 1.17.0+ runs inside FrankenPHP (PHP 8.4 ZTS), concurrent requests cause memory corruption in dd-trace-php's Rust internals (libdatadog), crashing the process:
 
 ```
 memory allocation of 3420891154821048684 bytes failed   (exit code 133 / SIGABRT)
 ```
 
-The allocation size (~3.4 exabytes) is a corrupted pointer value being read as a size — memory corruption in dd-trace-php's Rust internals (libdatadog). The corruption occurs during concurrent PHP request handling where multiple threads interact with dd-trace-php simultaneously.
+The allocation size (~3.4 exabytes) is a corrupted pointer value being read as a size.
+
+**The trigger is concurrent requests through dd-trace-php's instrumentation hooks across FrankenPHP's PHP threads.** No special timing, idle periods, or traffic patterns required — just enough concurrent requests (~500+) with dd-trace-php active.
 
 **1.16.0 is stable. 1.17.0+ crashes.**
 
@@ -42,31 +44,24 @@ cd dd-trace-php-crash-repro
 ### What the test does
 
 1. Builds FrankenPHP (PHP 8.4 ZTS, 20 threads) with dd-trace-php (appsec + profiling) and a Datadog Agent sidecar
-2. Sends concurrent HTTP requests using `ab`
-3. Checks if the container crashed
+2. Sends `ab -n 5000 -c 200` in bursts with 5s gaps
+3. Checks if the container crashed (exit code 133)
 
-That's it. No framework, no database, no special timing. Just concurrent requests to a trivial PHP script with dd-trace-php active.
+No framework, no database. Just concurrent requests to a trivial PHP script with dd-trace-php active.
 
 > **Note:** The Datadog Agent sidecar is included because dd-trace-php sends traces to it — removing the agent changes the code path and may affect reproducibility. The crash is in dd-trace-php's client-side code, not in the agent.
 
-### Crash trigger analysis
+### What we learned about the trigger
 
-We tested variations of request count, concurrency, and idle time to find the minimal trigger:
-
-| Pattern | Result |
+| Variation | Result |
 |---|---|
-| `ab -n 5000 -c 10` | **CRASHED** — burst 1 |
-| `ab -n 5000 -c 200, 0s idle` | **CRASHED** — burst 1, 1s |
-| `ab -n 500 -c 200` | **CRASHED** — burst 2, 6s |
-| `ab -n 100 -c 50, 2s idle` | **CRASHED** — burst 17, 34s |
-| `ab -n 100 -c 200` | Survived 10 bursts |
-| `ab -n 100 -c 100, 1s idle` | Survived 20 bursts |
+| Concurrency 10 | **CRASHED** |
+| Concurrency 200 | **CRASHED** |
+| Zero idle between bursts | **CRASHED** |
+| 500+ requests per burst | **CRASHED** |
+| 100 requests per burst | Survived (not enough to trigger) |
 
-**Findings:**
-- **Idle time doesn't matter** — crashes with zero idle between bursts
-- **Low concurrency is enough** — crashes at concurrency 10
-- **~500+ requests needed** — 100 requests sometimes survives, 500+ reliably crashes
-- The trigger is simply: enough concurrent requests flowing through dd-trace-php's instrumentation hooks across FrankenPHP's threads
+Concurrency level barely matters. Idle time doesn't matter at all. The only variable that affects reproducibility is request volume — ~500+ requests reliably crashes, ~100 sometimes survives.
 
 ### Version comparison
 
@@ -103,19 +98,18 @@ Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::ab
 - **Tested on:** macOS ARM64 (Docker Desktop) and ECS Fargate (Linux ARM64)
 - **Not tested:** x86_64, PHP 8.3 ZTS, NTS builds, php-fpm
 
-## What's in the Box
+## Repo Contents
 
 | File | Purpose |
 |---|---|
-| `version-test.sh` | **Start here.** Automated A/B test — builds specific version, runs load, reports result |
-| `Dockerfile` | FrankenPHP + dd-trace-php (version via build arg) + crash handler |
-| `Caddyfile` | 20 threads, `/health` at Caddy level (never reaches PHP) |
-| `public/index.php` | Trivial PHP script — file I/O + JSON serialization |
+| `version-test.sh` | **Start here.** Builds a specific dd-trace-php version, runs load, reports crash or survive |
+| `Dockerfile` | FrankenPHP + dd-trace-php (version via `DD_TRACE_VERSION` build arg) + crash handler |
 | `docker-compose.yml` | App + Datadog Agent sidecar |
-| `crash_handler.c` | LD_PRELOAD signal handler — prints backtrace on crash |
+| `Caddyfile` | 20 FrankenPHP threads, `/health` handled by Caddy (never reaches PHP) |
+| `public/index.php` | Trivial PHP script — file I/O + JSON serialization |
+| `crash_handler.c` | LD_PRELOAD signal handler — prints backtrace on crash, zero runtime overhead |
 | `entrypoint.sh` | Starts FrankenPHP with crash handler (or gdb via `RUN_WITH_GDB=true`) |
-| `burst-test.sh` | Continuous burst-then-idle load (investigation tool) |
-| `find-trigger.sh` | Systematically tests timing/concurrency variations (investigation tool) |
+| `investigation/` | Scripts used during our trigger analysis (`burst-test.sh`, `find-trigger.sh`, `test.sh`) |
 
 ## Env Vars We've Tried (None Fixed It)
 
