@@ -4,30 +4,22 @@ services:
     ports:
       - "8080:80"
     environment:
-      # Datadog tracing config
       DD_AGENT_HOST: datadog-agent
       DD_ENV: local
       DD_SERVICE: crash-repro
       DD_VERSION: "1.0"
-      DD_TRACE_CLI_ENABLED: "true"
       DD_TRACE_AUTO_FLUSH_ENABLED: "true"
       DD_TRACE_GENERATE_ROOT_SPAN: "true"
-      # Profiling — matches reporter @irhtml's config
       DD_PROFILING_ENABLED: "true"
       DD_PROFILING_ALLOCATION_ENABLED: "true"
       DD_PROFILING_TIMELINE_ENABLED: "true"
-      # Set to "false" to run without gdb
       RUN_WITH_GDB: "false"
     depends_on:
       - datadog-agent
-    # Required for gdb to attach and for core dumps
     cap_add:
       - SYS_PTRACE
     security_opt:
       - seccomp=unconfined
-    # Persist core dumps
-    volumes:
-      - crash-data:/tmp
 
   datadog-agent:
     image: datadog/agent:7
@@ -35,16 +27,6 @@ services:
       DD_API_KEY: "dummy000000000000000000000000000"
       DD_APM_ENABLED: "true"
       DD_APM_NON_LOCAL_TRAFFIC: "true"
-      # Suppress noise from dummy API key
       DD_USE_DOGSTATSD: "false"
       DD_LOGS_ENABLED: "false"
       DD_PROCESS_AGENT_ENABLED: "false"
-
-  loadtest:
-    image: alpine:3.20
-    depends_on:
-      - app
-    entrypoint: ["sh", "-c", "apk add --no-cache apache2-utils curl > /dev/null 2>&1 && echo 'Waiting for app...' && until curl -sf http://app:80/health > /dev/null 2>&1; do sleep 1; done && echo 'App ready. Starting load test loops...' && while true; do echo '--- Round start ---' && ab -n 20000 -c 200 http://app:80/ 2>&1 | grep -E 'Complete req|Failed|Requests per|Non-2xx' && echo 'Container status:' && curl -sf http://app:80/health && echo '' && sleep 2; done"]
-
-volumes:
-  crash-data:

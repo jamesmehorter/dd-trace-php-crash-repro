@@ -78,8 +78,10 @@ Concurrency level barely matters. The only variable is request volume — ~500+ 
 
 | Version | Result |
 |---|---|
-| **1.18.0** | **CRASHED** — seconds |
+| No dd-trace-php | Survived 30K requests — FrankenPHP alone is stable |
 | **1.16.0** | Survived 180s — 14 bursts, 140K requests, zero failures |
+| **1.17.0** | **CRASHED after 1s** — first burst |
+| **1.18.0** | **CRASHED after ~10s** |
 
 ### Crash output
 
@@ -98,7 +100,7 @@ frankenphp() [0x48c368]
 
 Signal 6 (SIGABRT) from Rust's `alloc::handle_alloc_error` → `std::process::abort()`. The backtrace is shallow because FrankenPHP is a statically-linked Go binary.
 
-> **Heisenbug note:** Replacing `ddtrace.so` with the debug-symbol build (`ddtrace-debug.so` from the release assets) shifts the memory layout enough to prevent the crash. The Datadog team will need to capture the full backtrace with their internal tooling (e.g., ASAN build or instrumented allocator).
+> **Debug symbols note:** Replacing `ddtrace.so` with the debug-symbol build (`ddtrace-debug.so` from the release assets) shifts the memory layout enough to suppress the corruption — expected behavior with heap corruption bugs. An ASAN build or instrumented allocator would be needed to capture the full call stack.
 
 ## Environment
 
@@ -137,11 +139,10 @@ However, **these same env vars did not prevent crashes on a full Laravel applica
 
 Pinning to 1.16.0 is the only reliable fix across all configurations.
 
-## TODO
+## Not Yet Tested
 
-- [ ] Test 1.17.0 explicitly to confirm it's the first broken release
-- [ ] Test without `--enable-appsec` to isolate whether libddwaf is involved
-- [ ] Test without `--enable-profiling` to isolate whether the profiler is involved
-- [ ] Test on x86_64
-- [ ] Test on PHP 8.3 ZTS
-- [ ] Test whether crash reproduces without the Datadog Agent sidecar
+- [ ] Without `--enable-appsec` to isolate whether libddwaf is involved
+- [ ] Without `--enable-profiling` to isolate whether the profiler is involved
+- [ ] x86_64 architecture
+- [ ] PHP 8.3 ZTS
+- [ ] Without the Datadog Agent sidecar
