@@ -17,7 +17,7 @@ RUN curl -LO https://github.com/DataDog/dd-trace-php/releases/download/${DD_TRAC
 
 # Build crash handler (prints backtrace on SIGTRAP/SIGABRT/SIGSEGV)
 COPY crash_handler.c /tmp/crash_handler.c
-RUN gcc -shared -fPIC -o /usr/local/lib/crash_handler.so /tmp/crash_handler.c \
+RUN gcc -shared -fPIC -rdynamic -o /usr/local/lib/crash_handler.so /tmp/crash_handler.c \
     && rm /tmp/crash_handler.c
 
 # Enable core dumps inside the container
