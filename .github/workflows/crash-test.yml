@@ -1,0 +1,152 @@
+name: Crash Test Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  crash-test:
+    name: "${{ matrix.name }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Control: FrankenPHP without dd-trace-php
+          - name: "Control (no dd-trace)"
+            version: "none"
+            install_flags: ""
+            expect: survive
+
+          # Version regression boundary
+          - name: "1.16.0 (last stable)"
+            version: "1.16.0"
+            install_flags: "--enable-appsec --enable-profiling"
+            expect: survive
+
+          - name: "1.17.0 (regression)"
+            version: "1.17.0"
+            install_flags: "--enable-appsec --enable-profiling"
+            expect: crash
+
+          - name: "1.18.0 (latest)"
+            version: "1.18.0"
+            install_flags: "--enable-appsec --enable-profiling"
+            expect: crash
+
+          # Isolate which component causes the crash
+          - name: "1.18.0 (trace only, no appsec/profiling)"
+            version: "1.18.0"
+            install_flags: ""
+            expect: unknown
+
+          - name: "1.18.0 (trace + appsec, no profiling)"
+            version: "1.18.0"
+            install_flags: "--enable-appsec"
+            expect: unknown
+
+          - name: "1.18.0 (trace + profiling, no appsec)"
+            version: "1.18.0"
+            install_flags: "--enable-profiling"
+            expect: unknown
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          if [ "${{ matrix.version }}" = "none" ]; then
+            # Build without dd-trace-php
+            cat > /tmp/Dockerfile.control << 'DEOF'
+          FROM dunglas/frankenphp:php8.4-trixie
+          RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+          COPY Caddyfile /etc/caddy/Caddyfile
+          COPY public/ /app/public/
+          COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+          RUN chmod +x /usr/local/bin/entrypoint.sh
+          WORKDIR /app
+          EXPOSE 80
+          ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+          DEOF
+            docker compose build --build-arg DD_TRACE_VERSION=none app 2>/dev/null || \
+              docker build -f /tmp/Dockerfile.control -t dd-trace-php-crash-repro-app .
+          else
+            # Temporarily modify Dockerfile to use the right install flags
+            sed "s/--enable-appsec --enable-profiling/${{ matrix.install_flags }}/" Dockerfile > /tmp/Dockerfile.test
+            docker build -f /tmp/Dockerfile.test --build-arg DD_TRACE_VERSION=${{ matrix.version }} -t dd-trace-php-crash-repro-app .
+          fi
+
+      - name: Start services
+        run: |
+          docker compose up -d datadog-agent
+          if [ "${{ matrix.version }}" = "none" ]; then
+            docker run -d --name app --network $(docker network ls --filter name=crash-repro -q | head -1) \
+              -p 8080:80 -e RUN_WITH_GDB=false dd-trace-php-crash-repro-app 2>/dev/null || \
+              docker compose up -d app
+          else
+            docker compose up -d app
+          fi
+          sleep 5
+
+      - name: Install ab
+        run: sudo apt-get install -y apache2-utils
+
+      - name: Verify app is running
+        run: |
+          curl -sf http://localhost:8080/health || (echo "App failed to start"; docker compose logs app; exit 1)
+          echo "App response:"
+          curl -sf http://localhost:8080/ | python3 -m json.tool
+
+      - name: Run crash test (6 rounds of ab -n 5000 -c 200)
+        id: test
+        run: |
+          CRASHED=false
+          for i in 1 2 3 4 5 6; do
+            echo "=== Round $i ==="
+            ab -n 5000 -c 200 http://localhost:8080/ 2>&1 | grep -E "Complete req|Failed|Requests per" || true
+
+            CID=$(docker compose ps -aq app 2>/dev/null | head -1)
+            if [ -z "$CID" ]; then CID=$(docker ps -aq --filter name=app | head -1); fi
+            STATUS=$(docker inspect -f '{{.State.Status}}' "$CID" 2>/dev/null || echo "missing")
+
+            if [ "$STATUS" != "running" ]; then
+              EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "$CID" 2>/dev/null || echo "?")
+              echo "CRASHED on round $i (exit code $EXIT_CODE)"
+              echo "Container logs:"
+              docker logs "$CID" 2>&1 | tail -20
+              CRASHED=true
+              break
+            fi
+          done
+
+          if [ "$CRASHED" = "true" ]; then
+            echo "result=crash" >> $GITHUB_OUTPUT
+          else
+            echo "result=survive" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Evaluate result
+        run: |
+          RESULT="${{ steps.test.outputs.result }}"
+          EXPECT="${{ matrix.expect }}"
+          echo "Result: $RESULT (expected: $EXPECT)"
+
+          if [ "$EXPECT" = "unknown" ]; then
+            echo "::notice::${{ matrix.name }}: $RESULT (exploratory test)"
+          elif [ "$RESULT" = "$EXPECT" ]; then
+            echo "::notice::${{ matrix.name }}: $RESULT (as expected)"
+          else
+            echo "::error::${{ matrix.name }}: expected $EXPECT but got $RESULT"
+            exit 1
+          fi
+
+      - name: Collect logs
+        if: always()
+        run: |
+          echo "=== App logs ==="
+          CID=$(docker compose ps -aq app 2>/dev/null | head -1)
+          if [ -z "$CID" ]; then CID=$(docker ps -aq --filter name=app | head -1); fi
+          docker logs "$CID" 2>&1 | tail -30 || true
