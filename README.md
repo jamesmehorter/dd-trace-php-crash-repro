@@ -69,10 +69,23 @@ Environment variables for `test.sh`:
 - **entrypoint.sh** — Wraps FrankenPHP in gdb to capture backtrace on crash
 - **test.sh** — Automated idle-then-request cycle with crash detection
 
+## Version Test Results
+
+```bash
+./version-test.sh 1.18.0   # CRASHED after 24s
+./version-test.sh 1.16.0   # SURVIVED 180s (14 bursts, 140K requests)
+```
+
 ## Env Vars We've Tried (None Fixed It)
 
-| Change | Result |
-|---|---|
-| `DD_TRACE_SIDECAR_TRACE_SENDER=false` | Still crashes |
-| `DD_INSTRUMENTATION_TELEMETRY_ENABLED=false` | Still crashes |
-| `DD_APPSEC_ENABLED=false` | Testing |
+All of the following were set simultaneously on a production ECS task running 1.18.0. It still crashed.
+
+| Variable | Value | Result |
+|---|---|---|
+| `DD_TRACE_SIDECAR_TRACE_SENDER` | `false` | Still crashes |
+| `DD_INSTRUMENTATION_TELEMETRY_ENABLED` | `false` | Still crashes |
+| `DD_APPSEC_ENABLED` | `false` | Still crashes |
+| `DD_TRACE_LOG_LEVEL` | `debug` | Still crashes (but logs tracer internals before crash) |
+| All four combined | — | Still crashes |
+
+The only fix is pinning to 1.16.0.
